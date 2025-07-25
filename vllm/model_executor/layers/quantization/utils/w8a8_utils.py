@@ -12,6 +12,8 @@ from vllm.model_executor.layers.quantization.input_quant_fp8 import QuantFP8
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     GroupShape)
 from vllm.platforms import current_platform
+import flashinfer
+import os
 
 # Input scaling factors are no longer optional in _scaled_mm starting
 # from pytorch 2.5. Allocating a dummy tensor to pass as input_scale
@@ -137,19 +139,133 @@ def maybe_create_device_identity():
         TORCH_DEVICE_IDENTITY = torch.ones(1, dtype=torch.float32)
 
 
-def cutlass_w8a8_scaled_mm(*, qinput: torch.Tensor, weight: torch.Tensor,
-                           out_dtype: torch.dtype, scale_a: torch.Tensor,
-                           scale_b: torch.Tensor, bias: torch.Tensor,
-                           output_shape: list, **kwargs) -> torch.Tensor:
+@torch.library.custom_op(
+    "vllm::bmm_fp8",
+    mutates_args=[],
+    device_types="cuda",
+)
+def bmm_fp8(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    A_scale: torch.Tensor,
+    B_scale: torch.Tensor,
+    dtype: torch.dtype,
+    backend: str = "cublas",
+) -> torch.Tensor:
+    return flashinfer.bmm_fp8(A, B, A_scale, B_scale, dtype, None, backend)
 
-    # Fused GEMM_DQ
-    output = ops.cutlass_scaled_mm(qinput,
+
+@torch.library.register_fake(
+    "vllm::bmm_fp8",
+)
+def bmm_fp8_fake(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    A_scale: torch.Tensor,
+    B_scale: torch.Tensor,
+    dtype: torch.dtype,
+    backend: str = "cublas",
+) -> torch.Tensor:
+    return torch.empty(A.shape[0], A.shape[1], B.shape[2], dtype=dtype, device=A.device)
+
+
+@torch.library.custom_op(
+    "vllm::gemm_fp8_nt_blockscaled",
+    mutates_args=[],
+    device_types="cuda",
+)
+def gemm_fp8_nt_blockscaled(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    a_scale: torch.Tensor,
+    b_scale: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return flashinfer.gemm.gemm_fp8_nt_blockscaled(
+        a, b, a_scale, b_scale, out_dtype=dtype
+    )
+
+
+@torch.library.register_fake(
+    "vllm::gemm_fp8_nt_blockscaled",
+)
+def gemm_fp8_nt_blockscaled_fake(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    a_scale: torch.Tensor,
+    b_scale: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return torch.empty(a.shape[0], b.shape[0], dtype=dtype, device=a.device)
+
+override_gemm = int(os.environ.get("VLLM_OVERRIDE_GEMM", "0"))
+
+def cutlass_w8a8_scaled_mm(
+    *,
+    qinput: torch.Tensor,
+    weight: torch.Tensor,
+    out_dtype: torch.dtype,
+    scale_a: torch.Tensor,
+    scale_b: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    output_shape: list,
+    **kwargs,
+) -> torch.Tensor:
+    if override_gemm == 0:
+        # Fused GEMM_DQ
+        output = ops.cutlass_scaled_mm(qinput,
                                    weight,
                                    out_dtype=out_dtype,
                                    scale_a=scale_a,
                                    scale_b=scale_b,
                                    bias=bias)
-    return output.view(*output_shape)
+        return output.view(*output_shape)
+
+    if override_gemm == 1:
+        assert bias is None
+        output = bmm_fp8(
+            qinput.unsqueeze(0),
+            weight.unsqueeze(0),
+            scale_a,
+            scale_b,
+            out_dtype,
+            "cublas",
+        )
+        return output[0].view(*output_shape)
+
+    if override_gemm == 2:
+        assert bias is None
+        output = bmm_fp8(
+            qinput.unsqueeze(0),
+            weight.unsqueeze(0),
+            scale_a,
+            scale_b,
+            out_dtype,
+            "cudnn",
+        )
+        return output[0].view(*output_shape)
+
+    if override_gemm == 3:
+        assert bias is None
+        weight = weight.t()
+        m = qinput.shape[0]
+        n = weight.shape[0]
+        k = qinput.shape[1]
+        g = 128
+        assert m % g == 0 and n % g == 0 and k % g == 0
+
+        scale_a = scale_a.repeat(k // g, m // g)
+        scale_b = scale_b.repeat(k // g, n // g)
+
+        return gemm_fp8_nt_blockscaled(
+            qinput,
+            weight,
+            scale_a,
+            scale_b,
+            out_dtype,
+        )
+
+    raise ValueError(f"Invalid override_gemm: {override_gemm}")
 
 
 def rocm_per_tensor_w8a8_scaled_mm(*, qinput: torch.Tensor,
