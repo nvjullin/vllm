@@ -10,6 +10,8 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType
+import flashinfer
+import os
 
 logger = init_logger(__name__)
 
@@ -660,16 +662,61 @@ def cutlass_blockwise_scaled_grouped_mm(
                                                      expert_offsets)
 
 
+@torch.library.custom_op(
+    "vllm::mm_fp4",
+    mutates_args=[],
+    device_types="cuda",
+)
+def mm_fp4(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    A_scale: torch.Tensor,
+    B_scale: torch.Tensor,
+    g_scale: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return flashinfer.mm_fp4(A, B, A_scale, B_scale, g_scale, dtype, block_size=16)
+
+
+@torch.library.register_fake(
+    "vllm::mm_fp4",
+)
+def mm_fp4_fake(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    A_scale: torch.Tensor,
+    B_scale: torch.Tensor,
+    g_scale: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return torch.empty(A.shape[0], B.shape[1], dtype=dtype, device=A.device)
+
+
+override_gemm = int(os.environ.get("VLLM_OVERRIDE_GEMM", "0"))
+
 def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
                           block_scale_a: torch.Tensor,
                           block_scale_b: torch.Tensor, alpha: torch.Tensor,
                           out_dtype: torch.dtype) -> torch.Tensor:
     assert a.ndim == 2 and b.ndim == 2
-    m, n = a.shape[0], b.shape[0]
-    out = torch.empty((m, n), dtype=out_dtype, device=a.device)
-    torch.ops._C.cutlass_scaled_fp4_mm(out, a, b, block_scale_a, block_scale_b,
-                                       alpha)
-    return out
+    assert block_scale_a.ndim == 2 and block_scale_b.ndim == 2
+    assert a.stride(-1) == 1 and b.stride(-1) == 1
+    assert a.shape[1] == b.shape[1]
+
+    if override_gemm == 0:
+        m, n = a.shape[0], b.shape[0]
+        out = torch.empty((m, n), dtype=out_dtype, device=a.device)
+        torch.ops._C.cutlass_scaled_fp4_mm(
+            out, a, b, block_scale_a, block_scale_b, alpha
+        )
+        return out
+
+    if override_gemm == 1:
+        assert block_scale_a.shape[1] == a.shape[1] // 8
+        assert block_scale_b.shape[1] == b.shape[1] // 8
+        return mm_fp4(a, b.t(), block_scale_a, block_scale_b.t(), alpha, out_dtype)
+
+    raise ValueError(f"Invalid override_gemm: {override_gemm}")
 
 
 def cutlass_scaled_mm_supports_fp8(cuda_device_capability: int) -> bool:

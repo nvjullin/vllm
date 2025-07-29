@@ -253,6 +253,7 @@ def cutlass_w8a8_scaled_mm(
         k = qinput.shape[1]
         g = 128
         assert m % g == 0 and n % g == 0 and k % g == 0
+        assert weight.shape[1] == k
 
         scale_a = scale_a.repeat(k // g, m // g)
         scale_b = scale_b.repeat(k // g, n // g)
