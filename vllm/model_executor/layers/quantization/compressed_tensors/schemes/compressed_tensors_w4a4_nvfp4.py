@@ -141,6 +141,7 @@ class CompressedTensorsW4A4Fp4(CompressedTensorsScheme):
         # quantize BF16 or FP16 to (FP4 and interleaved block scale)
         x_fp4, x_blockscale = scaled_fp4_quant(x, layer.input_global_scale)
 
+        assert False, "I'm not dealing with this for now"
         out = cutlass_scaled_fp4_mm(x_fp4, layer.weight, x_blockscale,
                                     layer.weight_scale_swizzled,
                                     1 / layer.alpha, output_dtype)

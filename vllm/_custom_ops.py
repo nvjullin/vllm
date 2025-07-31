@@ -674,8 +674,11 @@ def mm_fp4(
     B_scale: torch.Tensor,
     g_scale: torch.Tensor,
     dtype: torch.dtype,
+    backend: str,
 ) -> torch.Tensor:
-    return flashinfer.mm_fp4(A, B, A_scale, B_scale, g_scale, dtype, block_size=16)
+    return flashinfer.mm_fp4(
+        A, B, A_scale, B_scale, g_scale, dtype, block_size=16, backend=backend
+    )
 
 
 @torch.library.register_fake(
@@ -688,6 +691,7 @@ def mm_fp4_fake(
     B_scale: torch.Tensor,
     g_scale: torch.Tensor,
     dtype: torch.dtype,
+    backend: str,
 ) -> torch.Tensor:
     return torch.empty(A.shape[0], B.shape[1], dtype=dtype, device=A.device)
 
@@ -714,7 +718,41 @@ def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
     if override_gemm == 1:
         assert block_scale_a.shape[1] == a.shape[1] // 8
         assert block_scale_b.shape[1] == b.shape[1] // 8
-        return mm_fp4(a, b.t(), block_scale_a, block_scale_b.t(), alpha, out_dtype)
+        return mm_fp4(
+            a,
+            b.t(),
+            block_scale_a,
+            block_scale_b.t(),
+            alpha,
+            out_dtype,
+            backend="cudnn",
+        )
+
+    if override_gemm == 2:
+        assert block_scale_a.shape[1] == a.shape[1] // 8
+        assert block_scale_b.shape[1] == b.shape[1] // 8
+        return mm_fp4(
+            a,
+            b.t(),
+            block_scale_a,
+            block_scale_b.t(),
+            alpha,
+            out_dtype,
+            backend="trtllm",
+        )
+
+    if override_gemm == 3:
+        assert block_scale_a.shape[1] == a.shape[1] // 8
+        assert block_scale_b.shape[1] == b.shape[1] // 8
+        return mm_fp4(
+            a,
+            b.t(),
+            block_scale_a,
+            block_scale_b.t(),
+            alpha,
+            out_dtype,
+            backend="cutlass",
+        )
 
     raise ValueError(f"Invalid override_gemm: {override_gemm}")
 

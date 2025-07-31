@@ -9,7 +9,7 @@ from torch.nn.parameter import Parameter
 
 import vllm.envs as envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
-from vllm._custom_ops import cutlass_scaled_fp4_mm, scaled_fp4_quant
+from vllm._custom_ops import cutlass_scaled_fp4_mm, scaled_fp4_quant, override_gemm
 from vllm.distributed import get_ep_group
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.config import FusedMoEParallelConfig
@@ -34,6 +34,7 @@ from vllm.model_executor.parameter import (ModelWeightParameter,
                                            PerTensorScaleParameter)
 from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
+import flashinfer
 
 logger = init_logger(__name__)
 
@@ -780,11 +781,32 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
         # block_size = 16;
         assert (layer.weight_scale.dtype == torch.float8_e4m3fn), (
             "Weight Block scale must be represented as FP8-E4M3")
-        swizzled_weight_scale = swizzle_blockscale(layer.weight_scale)
+        if override_gemm == 2:
+            weight = layer.weight.data
+            weight_scale = layer.weight_scale.data
 
-        layer.weight_scale_swizzled = Parameter(swizzled_weight_scale,
-                                                requires_grad=False)
-        layer.weight = Parameter(layer.weight.data, requires_grad=False)
+            epilogue_tile_m = 128
+            weight = flashinfer.shuffle_matrix_a(
+                weight.view(torch.uint8), epilogue_tile_m
+            )
+            weight_scale = (
+                flashinfer.shuffle_matrix_sf_a(
+                    weight_scale.view(torch.uint8), epilogue_tile_m
+                )
+                .reshape(weight_scale.shape)
+                .view(torch.float8_e4m3fn)
+            )
+
+            # shim name
+            layer.weight_scale_swizzled = Parameter(weight_scale, requires_grad=False)
+            layer.weight = Parameter(weight, requires_grad=False)
+        else:
+            swizzled_weight_scale = swizzle_blockscale(layer.weight_scale)
+
+            layer.weight_scale_swizzled = Parameter(
+                swizzled_weight_scale, requires_grad=False
+            )
+            layer.weight = Parameter(layer.weight.data, requires_grad=False)
 
         if self.use_marlin:
             prepare_fp4_layer_for_marlin(layer)
