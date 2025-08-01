@@ -728,7 +728,7 @@ def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
             backend="cudnn",
         )
 
-    if override_gemm == 2:
+    if override_gemm == 2 or override_gemm == 4:
         assert block_scale_a.shape[1] == a.shape[1] // 8
         assert block_scale_b.shape[1] == b.shape[1] // 8
         return mm_fp4(
@@ -744,6 +744,12 @@ def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
     if override_gemm == 3:
         assert block_scale_a.shape[1] == a.shape[1] // 8
         assert block_scale_b.shape[1] == b.shape[1] // 8
+
+        if block_scale_a.dtype == torch.float8_e4m3fn:
+            block_scale_a = block_scale_a.view(torch.uint8)
+        if block_scale_b.dtype == torch.float8_e4m3fn:
+            block_scale_b = block_scale_b.view(torch.uint8)
+
         return mm_fp4(
             a,
             b.t(),

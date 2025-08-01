@@ -32,6 +32,8 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
+import flashinfer
+from vllm._custom_ops import override_gemm
 
 logger = init_logger(__name__)
 
@@ -306,12 +308,14 @@ class Worker(WorkerBase):
                 x for x in warmup_sizes if x not in
                 self.vllm_config.compilation_config.cudagraph_capture_sizes
             ]
-        # We skip EPLB here since we don't want to record dummy metrics
-        for size in sorted(warmup_sizes, reverse=True):
-            logger.info("Compile and warming up model for size %d", size)
-            self.model_runner._dummy_run(size, skip_eplb=True)
-        if not self.model_config.enforce_eager:
-            self.model_runner.capture_model()
+
+        with flashinfer.autotune(override_gemm == 4):
+            # We skip EPLB here since we don't want to record dummy metrics
+            for size in sorted(warmup_sizes, reverse=True):
+                logger.info("Compile and warming up model for size %d", size)
+                self.model_runner._dummy_run(size, skip_eplb=True)
+            if not self.model_config.enforce_eager:
+                self.model_runner.capture_model()
 
         # Warm up sampler and preallocate memory buffer for logits and other
         # sampling related tensors of max possible shape to avoid memory
