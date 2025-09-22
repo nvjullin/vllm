@@ -143,7 +143,14 @@ COPY requirements/common.txt requirements/common.txt
 COPY requirements/cuda.txt requirements/cuda.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements/cuda.txt \
+    --extra-index-url https://download.pytorch.org/whl/test/cu128 \
     --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system xformers \
+    --extra-index-url https://download.pytorch.org/whl/test/cu128 \
+    --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
+
 
 # cuda arch list used by torch
 # can be useful for both `dev` and `test`
@@ -173,6 +180,7 @@ ENV UV_LINK_MODE=copy
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements/build.txt \
+    --extra-index-url https://download.pytorch.org/whl/test/cu128 \
     --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
 
 COPY . .
@@ -350,9 +358,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-            "torch==2.8.0.dev20250318+cu128" "torchvision==0.22.0.dev20250319" ; \
+            --extra-index-url https://download.pytorch.org/whl/test/cu128 \
+            "torch==2.9.0+cu128" "torchvision" ; \
         uv pip install --system \
             --index-url ${PYTORCH_CUDA_NIGHTLY_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
+            --extra-index-url https://download.pytorch.org/whl/test/cu128 \
             --pre pytorch_triton==3.3.0+gitab727c40 ; \
     fi
 
@@ -360,6 +370,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist \
     --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system dist/*.whl --verbose \
+        --extra-index-url https://download.pytorch.org/whl/test/cu128 \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
 
 # If we need to build FlashInfer wheel before its release:
@@ -433,6 +444,7 @@ uv pip list
 COPY requirements/build.txt requirements/build.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements/build.txt \
+        --extra-index-url https://download.pytorch.org/whl/test/cu128 \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
 
 # Install DeepGEMM from source
